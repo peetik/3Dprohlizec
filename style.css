@@ -102,13 +102,6 @@ button#reset-btn {
   justify-content: center;
   pointer-events: none;
   text-align: center;
-  transition: background-color 0.15s ease;
-}
-
-.dropzone.dragover {
-  background-color: rgba(79, 140, 255, 0.08);
-  outline: 2px dashed var(--accent);
-  outline-offset: -12px;
 }
 
 .dropzone-content {
@@ -122,11 +115,6 @@ button#reset-btn {
   font-weight: 600;
   color: var(--text);
   margin: 0 0 8px;
-}
-
-.dropzone-hint {
-  font-size: 0.85rem;
-  opacity: 0.8;
 }
 
 .hidden {

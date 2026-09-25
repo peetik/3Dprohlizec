@@ -9,12 +9,16 @@ verzují přímo v tomto repozitáři.
 ## Co umí
 
 - Výběr modelu ze seznamu (nahraného v repu) přes rozbalovací nabídku.
-- Přetažení `.glb` souboru myší přímo do okna prohlížeče (lokální náhled).
-- Tlačítko „Nahrát soubor…“ pro výběr souboru z disku.
 - Orbit ovládání myší/dotykem — rotace, zoom (kolečko/pinch), posun (pravé
   tlačítko/dva prsty).
 - Automatické vycentrování a přiblížení modelu po načtení, tlačítko
   „Reset view“ pro návrat k výchozímu pohledu.
+- Panel „Světlo a textury“ — nastavení slunce, okolního světla, expozice,
+  stínů, barvy pozadí a nouzová oprava chybějících UV souřadnic.
+
+Modely se přidávají výhradně nahráním do složky `models/` v repu — žádné
+tlačítko pro nahrání souboru z počítače v prohlížeči záměrně není, aby
+nevznikal dojem, že se tím model sdílí s kolegy (viz níže).
 
 ## Jak přidat nový model pro kolegy
 
@@ -23,12 +27,8 @@ složky `models/` a přidej záznam do `models/manifest.json`.
 
 ## Jak spustit lokálně
 
-Stačí otevřít `index.html` dvojklikem a přetáhnout do okna `.glb` soubor
-(nebo použít „Nahrát soubor…“). Potřebuješ jen připojení k internetu, protože
-Three.js se stahuje z CDN.
-
-Seznam modelů z `models/manifest.json` se ale při otevření dvojklikem
-(`file://`) nenačte. Když chceš vyzkoušet i ten, spusť lokální server:
+Stránka používá `fetch()` pro načtení seznamu modelů, takže nejde otevřít
+přímo dvojklikem (`file://`) — je potřeba lokální statický server:
 
 ```bash
 # Python (obvykle už nainstalovaný)

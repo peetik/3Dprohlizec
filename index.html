@@ -16,8 +16,6 @@
         </select>
       </div>
       <div class="toolbar-group">
-        <button id="file-btn" type="button">Nahrát soubor…</button>
-        <input id="file-input" type="file" accept=".glb,.gltf" hidden />
         <button id="reset-btn" type="button" title="Vrátit pohled na výchozí">Reset view</button>
         <button id="settings-btn" type="button" aria-expanded="false" aria-controls="settings-panel">Světlo a textury</button>
       </div>
@@ -32,8 +30,7 @@
       <div id="dropzone" class="dropzone">
         <div class="dropzone-content">
           <p class="dropzone-title">3D Viewer</p>
-          <p>Přetáhněte sem soubor <strong>.glb</strong>, nebo jej vyberte tlačítkem výše.</p>
-          <p class="dropzone-hint">Případně zvolte model ze seznamu.</p>
+          <p>Zvolte model ze seznamu vlevo nahoře.</p>
         </div>
       </div>
 
@@ -111,8 +108,6 @@
     const container = document.getElementById("viewer-container");
     const dropzone = document.getElementById("dropzone");
     const modelSelect = document.getElementById("model-select");
-    const fileBtn = document.getElementById("file-btn");
-    const fileInput = document.getElementById("file-input");
     const resetBtn = document.getElementById("reset-btn");
     const settingsBtn = document.getElementById("settings-btn");
     const settingsPanel = document.getElementById("settings-panel");
@@ -198,7 +193,6 @@
 
     // ---------- State ----------
     let currentModel = null;
-    let currentObjectUrl = null;
     let defaultView = null; // { position: Vector3, target: Vector3 }
     const modelCenter = new THREE.Vector3();
     let modelRadius = 5;
@@ -242,10 +236,6 @@
           }
         });
         currentModel = null;
-      }
-      if (currentObjectUrl) {
-        URL.revokeObjectURL(currentObjectUrl);
-        currentObjectUrl = null;
       }
     }
 
@@ -471,19 +461,6 @@
       );
     }
 
-    function loadFromFile(file) {
-      if (!file) return;
-      const name = file.name.toLowerCase();
-      if (!name.endsWith(".glb") && !name.endsWith(".gltf")) {
-        showError("Podporovány jsou pouze soubory .glb nebo .gltf.");
-        return;
-      }
-      const url = URL.createObjectURL(file);
-      currentObjectUrl = url;
-      modelSelect.value = "";
-      loadFromUrl(url, file.name);
-    }
-
     // ---------- Manifest / model select ----------
     function addPlaceholderOption(text) {
       const opt = document.createElement("option");
@@ -525,40 +502,7 @@
       loadFromUrl(`models/${file}`, modelSelect.options[modelSelect.selectedIndex].textContent, file);
     });
 
-    // ---------- File input / drag & drop ----------
-    fileBtn.addEventListener("click", () => fileInput.click());
-    fileInput.addEventListener("change", () => {
-      loadFromFile(fileInput.files[0]);
-      fileInput.value = "";
-    });
-
-    ["dragenter", "dragover"].forEach((evt) => {
-      container.addEventListener(evt, (e) => {
-        e.preventDefault();
-        dropzone.classList.remove("hidden");
-        dropzone.classList.add("dragover");
-      });
-    });
-
-    ["dragleave", "dragend"].forEach((evt) => {
-      container.addEventListener(evt, (e) => {
-        e.preventDefault();
-        dropzone.classList.remove("dragover");
-        if (currentModel) dropzone.classList.add("hidden");
-      });
-    });
-
-    container.addEventListener("drop", (e) => {
-      e.preventDefault();
-      dropzone.classList.remove("dragover");
-      const file = e.dataTransfer.files && e.dataTransfer.files[0];
-      loadFromFile(file);
-    });
-
     resetBtn.addEventListener("click", resetView);
-
-    // Dropping a file outside the canvas would otherwise make the browser navigate to it.
-    ["dragover", "drop"].forEach((evt) => window.addEventListener(evt, (e) => e.preventDefault()));
 
     // ---------- Settings panel ----------
     const settingInputs = settingsPanel.querySelectorAll("[data-setting]");

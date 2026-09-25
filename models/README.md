@@ -22,10 +22,11 @@
 4. Ulož a commitni změnu (na GitHubu stačí kliknout „Commit changes“).
    Po chvíli se model objeví ve výběru na nasazené stránce.
 
-> **Pozor:** tlačítko „Nahrát soubor…“ a přetažení souboru do okna jsou
-> jen lokální náhled. Soubor se nikam nekopíruje a kolegové ho neuvidí.
-> Seznam modelů navíc funguje jen na webu (GitHub Pages nebo lokální
-> server), ne při otevření `index.html` dvojklikem.
+> **Pozor:** jiná cesta, jak modely přidat, není — viewer nemá tlačítko pro
+> nahrání souboru z počítače. Jediný způsob, jak se model dostane ke
+> kolegům, je nahrát ho do této složky přes GitHub (kroky výše). Seznam
+> modelů navíc funguje jen na webu (GitHub Pages nebo lokální server), ne
+> při otevření `index.html` dvojklikem.
 
 ## Checklist pro export z Blenderu
 
