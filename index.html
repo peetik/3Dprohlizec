@@ -35,6 +35,22 @@
       </div>
 
       <aside id="settings-panel" class="settings-panel hidden">
+        <h2>Zobrazení</h2>
+        <div class="setting-radio-group" role="radiogroup" aria-label="Režim zobrazení">
+          <label class="setting-radio">
+            <input type="radio" name="displayMode" data-setting="displayMode" value="solid" />
+            <span>Materiály</span>
+          </label>
+          <label class="setting-radio">
+            <input type="radio" name="displayMode" data-setting="displayMode" value="edges" />
+            <span>Materiály + hrany</span>
+          </label>
+          <label class="setting-radio">
+            <input type="radio" name="displayMode" data-setting="displayMode" value="wireframe" />
+            <span>Drátěný model</span>
+          </label>
+        </div>
+
         <h2>Světlo</h2>
         <label class="setting">
           <span>Slunce – síla <output data-for="sunIntensity"></output></span>
@@ -121,11 +137,12 @@
     // ---------- Settings ----------
     const SETTINGS_KEY = "glb-viewer-settings-v1";
     const DEFAULT_SETTINGS = {
-      sunIntensity: 1.0,
+      displayMode: "edges", // "solid" | "edges" | "wireframe"
+      sunIntensity: 2.2,
       sunAzimuth: 45,
-      sunElevation: 50,
-      envIntensity: 1.0,
-      exposure: 1.0,
+      sunElevation: 35,
+      envIntensity: 0.35,
+      exposure: 0.85,
       shadows: true,
       background: "#14161a",
       fixUV: true,
@@ -230,6 +247,10 @@
         currentModel.traverse((obj) => {
           if (obj.geometry) obj.geometry.dispose();
           if (obj.userData.originalGeometry) obj.userData.originalGeometry.dispose();
+          if (obj.userData.edgeLines) {
+            obj.userData.edgeLines.geometry.dispose();
+            obj.userData.edgeLines.material.dispose();
+          }
           if (obj.material) {
             const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
             materials.forEach(disposeMaterial);
@@ -237,6 +258,30 @@
         });
         currentModel = null;
       }
+    }
+
+    // ---------- Display mode (solid / edges / wireframe) ----------
+    const EDGE_MATERIAL = new THREE.LineBasicMaterial({ color: 0x0a0a0c });
+    const EDGE_THRESHOLD_DEG = 20;
+
+    function buildEdgeLines(mesh) {
+      const edges = new THREE.EdgesGeometry(mesh.geometry, EDGE_THRESHOLD_DEG);
+      const lines = new THREE.LineSegments(edges, EDGE_MATERIAL);
+      lines.renderOrder = 1;
+      mesh.add(lines);
+      mesh.userData.edgeLines = lines;
+    }
+
+    function applyDisplayMode() {
+      if (!currentModel) return;
+      const mode = settings.displayMode;
+      currentModel.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.visible = mode !== "wireframe";
+        if (obj.userData.edgeLines) {
+          obj.userData.edgeLines.visible = mode === "edges" || mode === "wireframe";
+        }
+      });
     }
 
     // ---------- Lighting ----------
@@ -358,7 +403,14 @@
         const original = mesh.userData.originalGeometry;
         if (mesh.geometry !== original) mesh.geometry.dispose();
         mesh.geometry = settings.fixUV ? buildBoxProjectedGeometry(mesh, settings.uvScale) : original;
+        // Geometry changed, so edge lines (built from the old geometry) must be rebuilt.
+        if (mesh.userData.edgeLines) {
+          mesh.userData.edgeLines.geometry.dispose();
+          mesh.remove(mesh.userData.edgeLines);
+          buildEdgeLines(mesh);
+        }
       }
+      applyDisplayMode();
       if (!currentModel) {
         uvInfo.textContent = "";
       } else if (uvCandidates.length === 0) {
@@ -428,7 +480,9 @@
       scene.add(currentModel);
       currentModel.updateMatrixWorld(true);
       findUVCandidates(currentModel);
-      applyUVFix();
+      currentModel.traverse((obj) => { if (obj.isMesh) buildEdgeLines(obj); });
+      applyUVFix(); // rebuilds edges for meshes whose geometry it replaces
+      applyDisplayMode();
       frameObject(currentModel);
       updateSun();
       dropzone.classList.add("hidden");
@@ -517,6 +571,7 @@
       settingInputs.forEach((input) => {
         const key = input.dataset.setting;
         if (input.type === "checkbox") input.checked = settings[key];
+        else if (input.type === "radio") input.checked = input.value === settings[key];
         else input.value = settings[key];
         const out = settingsPanel.querySelector(`output[data-for="${key}"]`);
         if (out) out.textContent = formatSetting(key, settings[key]);
@@ -528,9 +583,10 @@
         const key = input.dataset.setting;
         if (input.type === "checkbox") settings[key] = input.checked;
         else if (input.type === "range") settings[key] = Number(input.value);
-        else settings[key] = input.value;
+        else settings[key] = input.value; // radio and other plain-value inputs
         syncSettingsUI();
         if (key === "fixUV" || key === "uvScale") applyUVFix();
+        else if (key === "displayMode") applyDisplayMode();
         else applyLighting();
         saveSettings();
       });
@@ -541,6 +597,7 @@
       syncSettingsUI();
       applyLighting();
       applyUVFix();
+      applyDisplayMode();
       saveSettings();
     });
 

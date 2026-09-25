@@ -177,6 +177,24 @@ button[aria-expanded="true"] {
   accent-color: var(--accent);
 }
 
+.setting-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.setting-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.setting-radio input[type="radio"] {
+  accent-color: var(--accent);
+}
+
 .setting-inline {
   flex-direction: row;
   align-items: center;
