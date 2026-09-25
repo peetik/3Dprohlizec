@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Viewer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <div class="toolbar-group">
+        <label for="model-select" class="visually-hidden">Vybrat model</label>
+        <select id="model-select">
+          <option value="">— Vyberte model —</option>
+        </select>
+      </div>
+      <div class="toolbar-group">
+        <button id="file-btn" type="button">Nahrát soubor…</button>
+        <input id="file-input" type="file" accept=".glb,.gltf" hidden />
+        <button id="reset-btn" type="button" title="Vrátit pohled na výchozí">Reset view</button>
+        <button id="settings-btn" type="button" aria-expanded="false" aria-controls="settings-panel">Světlo a textury</button>
+      </div>
+      <div class="toolbar-group toolbar-status">
+        <span id="status-text"></span>
+      </div>
+    </header>
+
+    <main id="viewer-container">
+      <canvas id="viewer-canvas"></canvas>
+
+      <div id="dropzone" class="dropzone">
+        <div class="dropzone-content">
+          <p class="dropzone-title">3D Viewer</p>
+          <p>Přetáhněte sem soubor <strong>.glb</strong>, nebo jej vyberte tlačítkem výše.</p>
+          <p class="dropzone-hint">Případně zvolte model ze seznamu.</p>
+        </div>
+      </div>
+
+      <aside id="settings-panel" class="settings-panel hidden">
+        <h2>Světlo</h2>
+        <label class="setting">
+          <span>Slunce – síla <output data-for="sunIntensity"></output></span>
+          <input type="range" data-setting="sunIntensity" min="0" max="5" step="0.05" />
+        </label>
+        <label class="setting">
+          <span>Slunce – směr <output data-for="sunAzimuth"></output></span>
+          <input type="range" data-setting="sunAzimuth" min="0" max="360" step="1" />
+        </label>
+        <label class="setting">
+          <span>Slunce – výška <output data-for="sunElevation"></output></span>
+          <input type="range" data-setting="sunElevation" min="5" max="90" step="1" />
+        </label>
+        <label class="setting">
+          <span>Okolní světlo <output data-for="envIntensity"></output></span>
+          <input type="range" data-setting="envIntensity" min="0" max="2" step="0.05" />
+        </label>
+        <label class="setting">
+          <span>Expozice <output data-for="exposure"></output></span>
+          <input type="range" data-setting="exposure" min="0.2" max="3" step="0.05" />
+        </label>
+        <label class="setting setting-inline">
+          <input type="checkbox" data-setting="shadows" />
+          <span>Stíny</span>
+        </label>
+        <label class="setting setting-inline">
+          <input type="color" data-setting="background" />
+          <span>Barva pozadí</span>
+        </label>
+
+        <h2>Textury</h2>
+        <label class="setting setting-inline">
+          <input type="checkbox" data-setting="fixUV" />
+          <span>Opravit UV (box projekce)</span>
+        </label>
+        <label class="setting">
+          <span>Měřítko textury <output data-for="uvScale"></output></span>
+          <input type="range" data-setting="uvScale" min="0.1" max="5" step="0.1" />
+        </label>
+        <p id="uv-info" class="setting-note"></p>
+
+        <button id="settings-reset" type="button">Výchozí nastavení</button>
+      </aside>
+
+      <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <span id="loading-text">Načítání modelu…</span>
+      </div>
+
+      <div id="error-box" class="error-box hidden"></div>
+    </main>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+    import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+    // ---------- DOM ----------
+    const canvas = document.getElementById("viewer-canvas");
+    const container = document.getElementById("viewer-container");
+    const dropzone = document.getElementById("dropzone");
+    const modelSelect = document.getElementById("model-select");
+    const fileBtn = document.getElementById("file-btn");
+    const fileInput = document.getElementById("file-input");
+    const resetBtn = document.getElementById("reset-btn");
+    const settingsBtn = document.getElementById("settings-btn");
+    const settingsPanel = document.getElementById("settings-panel");
+    const settingsResetBtn = document.getElementById("settings-reset");
+    const uvInfo = document.getElementById("uv-info");
+    const statusText = document.getElementById("status-text");
+    const loadingEl = document.getElementById("loading");
+    const loadingText = document.getElementById("loading-text");
+    const errorBox = document.getElementById("error-box");
+
+    // ---------- Settings ----------
+    const SETTINGS_KEY = "glb-viewer-settings-v1";
+    const DEFAULT_SETTINGS = {
+      sunIntensity: 1.0,
+      sunAzimuth: 45,
+      sunElevation: 50,
+      envIntensity: 1.0,
+      exposure: 1.0,
+      shadows: true,
+      background: "#14161a",
+      fixUV: true,
+      uvScale: 1.0,
+    };
+
+    function loadSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+        return { ...DEFAULT_SETTINGS, ...saved };
+      } catch {
+        return { ...DEFAULT_SETTINGS };
+      }
+    }
+
+    function saveSettings() {
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+      } catch {
+        // Storage unavailable (private window etc.) — settings just won't persist.
+      }
+    }
+
+    const settings = loadSettings();
+
+    // ---------- Three.js setup ----------
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(
+      50,
+      container.clientWidth / container.clientHeight,
+      0.01,
+      5000
+    );
+    camera.position.set(2, 2, 3);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+
+    // Lighting — a neutral studio environment gives PBR materials something
+    // to reflect, plus one adjustable sun for shape and shadows.
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.shadow.mapSize.set(2048, 2048);
+    dirLight.shadow.bias = -0.0005;
+    scene.add(dirLight);
+    scene.add(dirLight.target);
+
+    // ---------- Loaders ----------
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath("https://unpkg.com/three@0.169.0/examples/jsm/libs/draco/");
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.setDRACOLoader(dracoLoader);
+
+    // ---------- State ----------
+    let currentModel = null;
+    let currentObjectUrl = null;
+    let defaultView = null; // { position: Vector3, target: Vector3 }
+    const modelCenter = new THREE.Vector3();
+    let modelRadius = 5;
+
+    function setStatus(text) {
+      statusText.textContent = text;
+    }
+
+    function showLoading(show, text) {
+      loadingEl.classList.toggle("hidden", !show);
+      if (text) loadingText.textContent = text;
+    }
+
+    function showError(message) {
+      if (!message) {
+        errorBox.classList.add("hidden");
+        errorBox.textContent = "";
+        return;
+      }
+      errorBox.textContent = message;
+      errorBox.classList.remove("hidden");
+      setTimeout(() => errorBox.classList.add("hidden"), 6000);
+    }
+
+    function disposeMaterial(m) {
+      Object.values(m).forEach((v) => {
+        if (v && v.isTexture) v.dispose();
+      });
+      m.dispose();
+    }
+
+    function clearCurrentModel() {
+      if (currentModel) {
+        scene.remove(currentModel);
+        currentModel.traverse((obj) => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.userData.originalGeometry) obj.userData.originalGeometry.dispose();
+          if (obj.material) {
+            const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+            materials.forEach(disposeMaterial);
+          }
+        });
+        currentModel = null;
+      }
+      if (currentObjectUrl) {
+        URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = null;
+      }
+    }
+
+    // ---------- Lighting ----------
+    function updateSun() {
+      const az = THREE.MathUtils.degToRad(settings.sunAzimuth);
+      const el = THREE.MathUtils.degToRad(settings.sunElevation);
+      const dist = modelRadius * 2;
+      dirLight.position.set(
+        modelCenter.x + dist * Math.cos(el) * Math.cos(az),
+        modelCenter.y + dist * Math.sin(el),
+        modelCenter.z + dist * Math.cos(el) * Math.sin(az)
+      );
+      dirLight.target.position.copy(modelCenter);
+      dirLight.intensity = settings.sunIntensity;
+
+      // Fit the shadow camera tightly around the model for crisp shadows.
+      const cam = dirLight.shadow.camera;
+      cam.left = -modelRadius;
+      cam.right = modelRadius;
+      cam.top = modelRadius;
+      cam.bottom = -modelRadius;
+      cam.near = dist - modelRadius * 1.5;
+      cam.far = dist + modelRadius * 1.5;
+      cam.updateProjectionMatrix();
+      dirLight.shadow.normalBias = modelRadius * 0.002;
+      dirLight.castShadow = settings.shadows;
+    }
+
+    function applyLighting() {
+      updateSun();
+      scene.environmentIntensity = settings.envIntensity;
+      renderer.toneMappingExposure = settings.exposure;
+      scene.background = new THREE.Color(settings.background);
+    }
+
+    // ---------- UV repair (box projection) ----------
+    // Blender materials mapped via Generated/Object/Box coordinates export
+    // without usable UVs: glTF only carries UV maps. Such meshes either lack
+    // a uv attribute or have faces collapsed to a line in UV space, which
+    // shows up as streaks and noise. For those we project UVs from world space.
+    const TEXTURE_SLOTS = ["map", "normalMap", "roughnessMap", "metalnessMap", "aoMap"];
+
+    function hasTextures(mesh) {
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      return materials.some((m) => m && TEXTURE_SLOTS.some((slot) => m[slot]));
+    }
+
+    function hasBrokenUVs(geometry) {
+      const uv = geometry.attributes.uv;
+      if (!uv) return true;
+      const pos = geometry.attributes.position;
+      const index = geometry.index;
+      const triCount = (index ? index.count : pos.count) / 3;
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      const ua = new THREE.Vector2(), ub = new THREE.Vector2(), uc = new THREE.Vector2();
+      let checked = 0;
+      let collapsed = 0;
+      for (let t = 0; t < triCount; t++) {
+        const i0 = index ? index.getX(t * 3) : t * 3;
+        const i1 = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+        const i2 = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+        a.fromBufferAttribute(pos, i0);
+        b.fromBufferAttribute(pos, i1);
+        c.fromBufferAttribute(pos, i2);
+        const worldArea = b.sub(a).cross(c.sub(a)).length() / 2;
+        if (worldArea < 1e-9) continue;
+        ua.fromBufferAttribute(uv, i0);
+        ub.fromBufferAttribute(uv, i1);
+        uc.fromBufferAttribute(uv, i2);
+        const uvArea = Math.abs((ub.x - ua.x) * (uc.y - ua.y) - (uc.x - ua.x) * (ub.y - ua.y)) / 2;
+        checked++;
+        if (uvArea / worldArea < 1e-6) collapsed++;
+      }
+      return checked > 0 && collapsed / checked > 0.2;
+    }
+
+    function buildBoxProjectedGeometry(mesh, scale) {
+      const geometry = mesh.userData.originalGeometry.toNonIndexed();
+      const pos = geometry.attributes.position;
+      const uvs = new Float32Array(pos.count * 2);
+      const w = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+      const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), n = new THREE.Vector3();
+
+      for (let i = 0; i < pos.count; i += 3) {
+        for (let k = 0; k < 3; k++) {
+          w[k].fromBufferAttribute(pos, i + k).applyMatrix4(mesh.matrixWorld);
+        }
+        n.crossVectors(e1.subVectors(w[1], w[0]), e2.subVectors(w[2], w[0]));
+        const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+        for (let k = 0; k < 3; k++) {
+          let u, v;
+          if (ax >= ay && ax >= az) { u = w[k].z; v = w[k].y; }
+          else if (ay >= az) { u = w[k].x; v = w[k].z; }
+          else { u = w[k].x; v = w[k].y; }
+          uvs[(i + k) * 2] = u / scale;
+          uvs[(i + k) * 2 + 1] = v / scale;
+        }
+      }
+      geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+      return geometry;
+    }
+
+    // Meshes judged broken on load; each keeps its original geometry in userData.
+    let uvCandidates = [];
+
+    function findUVCandidates(model) {
+      uvCandidates = [];
+      model.traverse((obj) => {
+        if (obj.isMesh && hasTextures(obj) && hasBrokenUVs(obj.geometry)) {
+          // Geometry may be shared between instances, so each mesh keeps its own reference.
+          obj.userData.originalGeometry = obj.geometry;
+          uvCandidates.push(obj);
+        }
+      });
+    }
+
+    function applyUVFix() {
+      for (const mesh of uvCandidates) {
+        const original = mesh.userData.originalGeometry;
+        if (mesh.geometry !== original) mesh.geometry.dispose();
+        mesh.geometry = settings.fixUV ? buildBoxProjectedGeometry(mesh, settings.uvScale) : original;
+      }
+      if (!currentModel) {
+        uvInfo.textContent = "";
+      } else if (uvCandidates.length === 0) {
+        uvInfo.textContent = "Všechny objekty mají v pořádku UV.";
+      } else {
+        const names = uvCandidates.map((m) => m.name || "(bez názvu)").join(", ");
+        uvInfo.textContent = settings.fixUV
+          ? `Opraveno objektů: ${uvCandidates.length} (${names})`
+          : `Objektů s chybnými UV: ${uvCandidates.length} (${names})`;
+      }
+    }
+
+    // ---------- Camera framing ----------
+    function frameObject(object) {
+      const box = new THREE.Box3().setFromObject(object);
+      if (box.isEmpty()) return;
+
+      const size = box.getSize(new THREE.Vector3());
+      box.getCenter(modelCenter);
+      modelRadius = size.length() / 2 || 1;
+
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const fitOffset = 1.5;
+      const fov = camera.fov * (Math.PI / 180);
+      const distance = (maxDim / (2 * Math.tan(fov / 2))) * fitOffset;
+
+      const direction = new THREE.Vector3(1, 0.6, 1).normalize();
+      const newPos = modelCenter.clone().add(direction.multiplyScalar(distance));
+
+      // Keep the near/far ratio modest — a huge range causes z-fighting flicker.
+      camera.near = distance / 100;
+      camera.far = distance * 100;
+      camera.updateProjectionMatrix();
+
+      camera.position.copy(newPos);
+      controls.target.copy(modelCenter);
+      controls.update();
+
+      defaultView = { position: newPos.clone(), target: modelCenter.clone() };
+    }
+
+    function resetView() {
+      if (!defaultView) return;
+      camera.position.copy(defaultView.position);
+      controls.target.copy(defaultView.target);
+      controls.update();
+    }
+
+    // ---------- Loading ----------
+    function onModelLoaded(gltf) {
+      clearCurrentModel();
+      currentModel = gltf.scene;
+
+      // Blender exports its lights in physical units (a 1 W/m² sun becomes
+      // 683 lux), which blows the scene out to white here. Use our own lighting.
+      const embeddedLights = [];
+      currentModel.traverse((obj) => { if (obj.isLight) embeddedLights.push(obj); });
+      embeddedLights.forEach((light) => light.removeFromParent());
+
+      currentModel.traverse((obj) => {
+        if (obj.isMesh) {
+          obj.castShadow = true;
+          obj.receiveShadow = true;
+        }
+      });
+
+      scene.add(currentModel);
+      currentModel.updateMatrixWorld(true);
+      findUVCandidates(currentModel);
+      applyUVFix();
+      frameObject(currentModel);
+      updateSun();
+      dropzone.classList.add("hidden");
+      showLoading(false);
+    }
+
+    function loadFromUrl(url, label, fileName) {
+      showError(null);
+      showLoading(true, `Načítání „${label}“…`);
+      setStatus(label);
+      gltfLoader.load(
+        url,
+        onModelLoaded,
+        (xhr) => {
+          if (xhr.total) {
+            const pct = Math.round((xhr.loaded / xhr.total) * 100);
+            showLoading(true, `Načítání „${label}“… ${pct}%`);
+          }
+        },
+        (err) => {
+          console.error(err);
+          showLoading(false);
+          const status = err && err.response && err.response.status;
+          showError(
+            status === 404 && fileName
+              ? `Soubor models/${fileName} nebyl nalezen. Zkontrolujte, že je nahraný ve složce models/.`
+              : "Nepodařilo se načíst model. Zkontrolujte, že jde o platný .glb/.gltf soubor."
+          );
+        }
+      );
+    }
+
+    function loadFromFile(file) {
+      if (!file) return;
+      const name = file.name.toLowerCase();
+      if (!name.endsWith(".glb") && !name.endsWith(".gltf")) {
+        showError("Podporovány jsou pouze soubory .glb nebo .gltf.");
+        return;
+      }
+      const url = URL.createObjectURL(file);
+      currentObjectUrl = url;
+      modelSelect.value = "";
+      loadFromUrl(url, file.name);
+    }
+
+    // ---------- Manifest / model select ----------
+    function addPlaceholderOption(text) {
+      const opt = document.createElement("option");
+      opt.disabled = true;
+      opt.textContent = text;
+      modelSelect.appendChild(opt);
+    }
+
+    async function loadManifest() {
+      // Browsers block fetch() on file:// pages, so the list only works when served.
+      if (location.protocol === "file:") {
+        addPlaceholderOption("Seznam funguje jen na webu (GitHub Pages / lokální server)");
+        return;
+      }
+      try {
+        const res = await fetch("models/manifest.json", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const list = await res.json();
+        if (!Array.isArray(list)) throw new Error("manifest.json není pole");
+        let added = 0;
+        for (const entry of list) {
+          if (!entry || !entry.file) continue;
+          const opt = document.createElement("option");
+          opt.value = entry.file;
+          opt.textContent = entry.name || entry.file;
+          modelSelect.appendChild(opt);
+          added++;
+        }
+        if (added === 0) addPlaceholderOption("Zatím žádné modely v models/manifest.json");
+      } catch (err) {
+        console.warn("Nelze načíst models/manifest.json:", err);
+        addPlaceholderOption("Seznam modelů se nepodařilo načíst");
+      }
+    }
+
+    modelSelect.addEventListener("change", () => {
+      const file = modelSelect.value;
+      if (!file) return;
+      loadFromUrl(`models/${file}`, modelSelect.options[modelSelect.selectedIndex].textContent, file);
+    });
+
+    // ---------- File input / drag & drop ----------
+    fileBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      loadFromFile(fileInput.files[0]);
+      fileInput.value = "";
+    });
+
+    ["dragenter", "dragover"].forEach((evt) => {
+      container.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("hidden");
+        dropzone.classList.add("dragover");
+      });
+    });
+
+    ["dragleave", "dragend"].forEach((evt) => {
+      container.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragover");
+        if (currentModel) dropzone.classList.add("hidden");
+      });
+    });
+
+    container.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      loadFromFile(file);
+    });
+
+    resetBtn.addEventListener("click", resetView);
+
+    // Dropping a file outside the canvas would otherwise make the browser navigate to it.
+    ["dragover", "drop"].forEach((evt) => window.addEventListener(evt, (e) => e.preventDefault()));
+
+    // ---------- Settings panel ----------
+    const settingInputs = settingsPanel.querySelectorAll("[data-setting]");
+
+    function formatSetting(key, value) {
+      if (key === "sunAzimuth" || key === "sunElevation") return `${Math.round(value)}°`;
+      if (key === "uvScale") return `${Number(value).toFixed(1)} m`;
+      return Number(value).toFixed(2);
+    }
+
+    function syncSettingsUI() {
+      settingInputs.forEach((input) => {
+        const key = input.dataset.setting;
+        if (input.type === "checkbox") input.checked = settings[key];
+        else input.value = settings[key];
+        const out = settingsPanel.querySelector(`output[data-for="${key}"]`);
+        if (out) out.textContent = formatSetting(key, settings[key]);
+      });
+    }
+
+    settingInputs.forEach((input) => {
+      input.addEventListener("input", () => {
+        const key = input.dataset.setting;
+        if (input.type === "checkbox") settings[key] = input.checked;
+        else if (input.type === "range") settings[key] = Number(input.value);
+        else settings[key] = input.value;
+        syncSettingsUI();
+        if (key === "fixUV" || key === "uvScale") applyUVFix();
+        else applyLighting();
+        saveSettings();
+      });
+    });
+
+    settingsResetBtn.addEventListener("click", () => {
+      Object.assign(settings, DEFAULT_SETTINGS);
+      syncSettingsUI();
+      applyLighting();
+      applyUVFix();
+      saveSettings();
+    });
+
+    settingsBtn.addEventListener("click", () => {
+      const open = settingsPanel.classList.toggle("hidden") === false;
+      settingsBtn.setAttribute("aria-expanded", String(open));
+    });
+
+    // ---------- Resize ----------
+    window.addEventListener("resize", () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+
+    // ---------- Render loop ----------
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    syncSettingsUI();
+    applyLighting();
+    loadManifest();
+    animate();
+  </script>
+</body>
+</html>
