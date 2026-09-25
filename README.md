@@ -4,8 +4,7 @@ Jednoduchý prohlížeč 3D modelů (.glb) z Blenderu, který se sdílí s koleg
 zdarma přes GitHub Pages. Žádný server, žádné uploadové limity — modely se
 verzují přímo v tomto repozitáři.
 
-**Živá stránka:** `https://<tvuj-github-ucet>.github.io/<nazev-repa>/`
-*(doplň po nasazení — viz níže)*
+**Živá stránka:** https://peetik.github.io/3Dprohlizec/
 
 ## Co umí
 
