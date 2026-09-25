@@ -248,8 +248,8 @@
           if (obj.geometry) obj.geometry.dispose();
           if (obj.userData.originalGeometry) obj.userData.originalGeometry.dispose();
           if (obj.userData.edgeLines) {
+            // EDGE_MATERIAL is shared across all meshes — dispose only its geometry.
             obj.userData.edgeLines.geometry.dispose();
-            obj.userData.edgeLines.material.dispose();
           }
           if (obj.material) {
             const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -268,7 +268,13 @@
       const edges = new THREE.EdgesGeometry(mesh.geometry, EDGE_THRESHOLD_DEG);
       const lines = new THREE.LineSegments(edges, EDGE_MATERIAL);
       lines.renderOrder = 1;
-      mesh.add(lines);
+      // A sibling of the mesh (not its child): a mesh hidden for wireframe
+      // mode would otherwise hide its child lines too, since Three.js
+      // skips rendering the whole subtree of an invisible object.
+      lines.position.copy(mesh.position);
+      lines.quaternion.copy(mesh.quaternion);
+      lines.scale.copy(mesh.scale);
+      mesh.parent.add(lines);
       mesh.userData.edgeLines = lines;
     }
 
@@ -404,9 +410,10 @@
         if (mesh.geometry !== original) mesh.geometry.dispose();
         mesh.geometry = settings.fixUV ? buildBoxProjectedGeometry(mesh, settings.uvScale) : original;
         // Geometry changed, so edge lines (built from the old geometry) must be rebuilt.
+        // They're a sibling of the mesh, not its child — see buildEdgeLines().
         if (mesh.userData.edgeLines) {
           mesh.userData.edgeLines.geometry.dispose();
-          mesh.remove(mesh.userData.edgeLines);
+          mesh.parent.remove(mesh.userData.edgeLines);
           buildEdgeLines(mesh);
         }
       }
