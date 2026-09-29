@@ -560,7 +560,9 @@
     modelSelect.addEventListener("change", () => {
       const file = modelSelect.value;
       if (!file) return;
-      loadFromUrl(`models/${file}`, modelSelect.options[modelSelect.selectedIndex].textContent, file);
+      // Cache-bust: browsers and the GitHub Pages CDN would otherwise keep
+      // serving an old .glb after it's replaced under the same filename.
+      loadFromUrl(`models/${file}?v=${Date.now()}`, modelSelect.options[modelSelect.selectedIndex].textContent, file);
     });
 
     resetBtn.addEventListener("click", resetView);
