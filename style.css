@@ -121,9 +121,44 @@ button#reset-btn {
   display: none !important;
 }
 
-button[aria-expanded="true"] {
+button[aria-expanded="true"],
+button[aria-pressed="true"] {
   border-color: var(--accent);
   color: var(--accent-hover);
+}
+
+#viewer-canvas.picking {
+  cursor: crosshair;
+}
+
+.explode-pick-panel {
+  padding: 10px;
+  margin-bottom: 12px;
+  background: #14161a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.explode-pick-panel .setting-note {
+  margin-bottom: 8px;
+}
+
+.explode-pick-panel .setting {
+  margin-bottom: 8px;
+}
+
+#explode-gizmo-toggle,
+#explode-pick-reset,
+#explode-clear-btn {
+  width: 100%;
+}
+
+#explode-gizmo-toggle {
+  margin-bottom: 6px;
+}
+
+#explode-clear-btn {
+  margin-bottom: 12px;
 }
 
 .settings-panel {
@@ -264,4 +299,35 @@ button[aria-expanded="true"] {
   padding: 10px 16px;
   border-radius: 8px;
   font-size: 0.9rem;
+}
+
+.part-tooltip {
+  position: absolute;
+  transform: translate(-50%, -100%) translateY(-10px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(28, 31, 37, 0.97);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  z-index: 8;
+  pointer-events: auto;
+}
+
+.part-tooltip::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--accent);
+}
+
+#part-tooltip-select {
+  padding: 5px 10px;
+  font-size: 0.8rem;
 }

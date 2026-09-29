@@ -82,10 +82,31 @@
         </label>
 
         <h2>Rozklad</h2>
-        <label class="setting">
+        <div class="setting-radio-group" role="radiogroup" aria-label="Režim rozkladu">
+          <label class="setting-radio">
+            <input type="radio" name="explodeMode" data-setting="explodeMode" value="auto" />
+            <span>Automaticky</span>
+          </label>
+          <label class="setting-radio">
+            <input type="radio" name="explodeMode" data-setting="explodeMode" value="manual" />
+            <span>Vybrat jednotlivě</span>
+          </label>
+        </div>
+
+        <label id="explode-auto-controls" class="setting">
           <span>Míra rozkladu <output data-for="explode"></output></span>
           <input type="range" data-setting="explode" min="0" max="1" step="0.01" />
         </label>
+
+        <div id="explode-manual-controls" class="explode-pick-panel hidden">
+          <p id="explode-pick-hint" class="setting-note">Klikněte na díl v modelu.</p>
+          <div id="explode-pick-selected" class="hidden">
+            <p class="setting-note">Vybráno: <strong id="explode-pick-name"></strong></p>
+            <button id="explode-pick-reset" type="button">Vrátit tento díl na 0</button>
+          </div>
+        </div>
+
+        <button id="explode-clear-btn" type="button">Zrušit celý rozklad</button>
 
         <h2>Textury</h2>
         <label class="setting setting-inline">
@@ -107,6 +128,11 @@
       </div>
 
       <div id="error-box" class="error-box hidden"></div>
+
+      <div id="part-tooltip" class="part-tooltip hidden">
+        <span id="part-tooltip-name"></span>
+        <button id="part-tooltip-select" type="button">Vybrat objekt</button>
+      </div>
     </main>
   </div>
 
@@ -134,6 +160,16 @@
     const settingsBtn = document.getElementById("settings-btn");
     const settingsPanel = document.getElementById("settings-panel");
     const settingsResetBtn = document.getElementById("settings-reset");
+    const explodeAutoControls = document.getElementById("explode-auto-controls");
+    const explodeManualControls = document.getElementById("explode-manual-controls");
+    const explodePickHint = document.getElementById("explode-pick-hint");
+    const explodePickSelected = document.getElementById("explode-pick-selected");
+    const explodePickName = document.getElementById("explode-pick-name");
+    const explodePickReset = document.getElementById("explode-pick-reset");
+    const partTooltip = document.getElementById("part-tooltip");
+    const partTooltipName = document.getElementById("part-tooltip-name");
+    const partTooltipSelect = document.getElementById("part-tooltip-select");
+    const explodeClearBtn = document.getElementById("explode-clear-btn");
     const uvInfo = document.getElementById("uv-info");
     const statusText = document.getElementById("status-text");
     const loadingEl = document.getElementById("loading");
@@ -153,6 +189,7 @@
       background: "#14161a",
       fixUV: true,
       uvScale: 1.0,
+      explodeMode: "auto", // "auto" | "manual"
       explode: 0,
     };
 
@@ -250,6 +287,13 @@
 
     function clearCurrentModel() {
       if (currentModel) {
+        selectedPart = null; // avoid touching a mesh whose material is about to be disposed
+        gizmoGroup.visible = false;
+        hideTooltip();
+        if (dragState) {
+          controls.enabled = true;
+          dragState = null;
+        }
         scene.remove(currentModel);
         currentModel.traverse((obj) => {
           if (obj.geometry) obj.geometry.dispose();
@@ -298,37 +342,363 @@
     }
 
     // ---------- Exploded view ----------
-    // Each top-level part gets pushed outward from the model's center, along
-    // the line from that center to the part's own center — a classic CAD-style
-    // "explosion" that works for any shape without per-model configuration.
+    // Two modes:
+    //  - "auto": every part pushed away from a common center, radially, by
+    //    one slider — a quick overview, not meant to be precise.
+    //  - "manual": pick a part by clicking it, then drag one of 6 on-screen
+    //    arrows (a 3D gizmo, like Blender/SketchUp) to nudge it along a
+    //    single world axis. Full control, one part at a time.
+    // Two earlier attempts at a single "smart" automatic layout (one shared
+    // axis, then two axes picked by variance) were both hard to predict —
+    // the direction a part would move wasn't obvious before trying it. The
+    // gizmo replaces guessing with direct manipulation.
     const EXPLODE_FACTOR = 0.8;
+    const MIN_EXPLODE_MAGNITUDE = 0.25;
+    const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
 
     function computeExplodeDirections(model) {
-      const partCenter = new THREE.Vector3();
-      for (const part of model.children) {
-        if (!part.isMesh) continue; // edge lines etc. move together with their mesh
+      // A "part" is any direct child of the model, mesh or group — a group
+      // (e.g. a multi-piece sub-assembly like a roof drain, several nested
+      // meshes under one node) explodes as a single rigid block rather than
+      // falling apart internally, and simply gets skipped if it has no
+      // mesh in it at all (empty helper nodes). Edge-line objects are NOT
+      // parts of their own — buildEdgeLines() already added them as
+      // siblings of their mesh in this same children list, and they're
+      // synced to their owning mesh's position below. Counting them here
+      // too would give them their own independent basePosition/offset, and
+      // applyExplode() would then fight between the two — the edges
+      // sliding one way while the mesh they belong to stays put.
+      const parts = model.children.filter(
+        (p) => !p.isLineSegments && new THREE.Box3().setFromObject(p).isEmpty() === false
+      );
+      const partCenters = parts.map((p) => new THREE.Box3().setFromObject(p).getCenter(new THREE.Vector3()));
+
+      // The explosion center is the average of each part's own center, not
+      // the bounding-box center of the whole model — a model dominated by
+      // one large flat part (e.g. a floor slab) would otherwise put the
+      // model's bounding-box center almost inside that part, leaving it
+      // with almost no distance to move while smaller parts fly far away.
+      const avgCenter = new THREE.Vector3();
+      partCenters.forEach((c) => avgCenter.add(c));
+      avgCenter.divideScalar(partCenters.length || 1);
+
+      let maxDist = 1e-6;
+      const dirs = partCenters.map((c) => {
+        const dir = c.clone().sub(avgCenter);
+        maxDist = Math.max(maxDist, dir.length());
+        return dir;
+      });
+
+      parts.forEach((part, i) => {
         part.userData.basePosition = part.position.clone();
-        new THREE.Box3().setFromObject(part).getCenter(partCenter);
-        const dir = partCenter.sub(modelCenter);
-        const dist = dir.length();
-        part.userData.explodeDir = dist > 1e-6 ? dir.divideScalar(dist) : new THREE.Vector3();
-      }
+        const dist = dirs[i].length();
+        const dir = dist > 1e-6 ? dirs[i].clone().divideScalar(dist) : new THREE.Vector3();
+        const raw = dist / maxDist;
+        // Guarantee every part moves a visible amount even if it sits
+        // almost exactly at the center — without this, small parts near
+        // the middle (e.g. bolts/anchors) look like they "don't work"
+        // while parts near the edges fly far away.
+        const magnitude = raw === 0 ? 0 : MIN_EXPLODE_MAGNITUDE + raw * (1 - MIN_EXPLODE_MAGNITUDE);
+        part.userData.autoOffset = dir.multiplyScalar(magnitude);
+        if (!part.userData.manualOffset) part.userData.manualOffset = new THREE.Vector3();
+      });
     }
 
     function applyExplode() {
       if (!currentModel) return;
-      const amount = settings.explode;
+      const auto = settings.explodeMode === "auto";
       for (const part of currentModel.children) {
         if (!part.userData.basePosition) continue;
-        const offset = part.userData.explodeDir
-          .clone()
-          .multiplyScalar(amount * modelRadius * EXPLODE_FACTOR);
+        const offset = auto
+          ? part.userData.autoOffset.clone().multiplyScalar(settings.explode * modelRadius * EXPLODE_FACTOR)
+          : part.userData.manualOffset.clone();
         part.position.copy(part.userData.basePosition).add(offset);
         if (part.userData.edgeLines) {
           part.userData.edgeLines.position.copy(part.position);
         }
       }
+      if (gizmoGroup.visible) positionGizmo(selectedPart);
     }
+
+    // ---------- Manual per-part explode: click a part, drag a 3D arrow ----------
+    let selectedPart = null;
+    const raycaster = new THREE.Raycaster();
+    const pointerNdc = new THREE.Vector2();
+
+    function isManualMode() {
+      return settings.explodeMode === "manual";
+    }
+
+    function setExplodeModeUI() {
+      const auto = settings.explodeMode === "auto";
+      explodeAutoControls.classList.toggle("hidden", !auto);
+      explodeManualControls.classList.toggle("hidden", auto);
+      canvas.classList.toggle("picking", !auto);
+      if (auto) {
+        selectPart(null);
+        hideTooltip();
+      }
+    }
+
+    function setPartHighlight(part, on) {
+      if (!part) return;
+      // part may be a group (a multi-mesh sub-assembly) — highlight every
+      // mesh inside it, not just a direct material.
+      part.traverse((obj) => {
+        if (!obj.isMesh) return;
+        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+        materials.forEach((m) => {
+          if (!m || !("emissive" in m)) return;
+          if (on) m.emissive.setHex(0x3a6fe0);
+          else m.emissive.setHex(0x000000);
+        });
+      });
+    }
+
+    // ---- 3D gizmo: 6 arrows (±X/±Y/±Z) drawn at the selected part ----
+    const gizmoGroup = new THREE.Group();
+    gizmoGroup.visible = false;
+    scene.add(gizmoGroup);
+    const GIZMO_AXES = [
+      { axis: AXES[0], color: 0xdd4444, hoverColor: 0xff8080 },
+      { axis: AXES[0].clone().negate(), color: 0xdd4444, hoverColor: 0xff8080 },
+      { axis: AXES[1], color: 0x55bb55, hoverColor: 0x9dff9d },
+      { axis: AXES[1].clone().negate(), color: 0x55bb55, hoverColor: 0x9dff9d },
+      { axis: AXES[2], color: 0x4488ee, hoverColor: 0x9dc4ff },
+      { axis: AXES[2].clone().negate(), color: 0x4488ee, hoverColor: 0x9dc4ff },
+    ];
+
+    const gizmoGrabMeshes = []; // parallel to gizmoGroup.children, used for raycasting
+
+    function buildGizmo() {
+      for (const spec of GIZMO_AXES) {
+        const arrow = new THREE.ArrowHelper(spec.axis, new THREE.Vector3(), 1, spec.color, undefined, undefined);
+        arrow.userData.axis = spec.axis;
+        arrow.userData.color = spec.color;
+        arrow.userData.hoverColor = spec.hoverColor;
+        // A generous invisible cylinder around the visible arrow makes it
+        // much easier to click/drag than the thin line+cone alone.
+        // ArrowHelper points along its own local +Y (that's where its line
+        // and cone children sit), so this needs no rotation of its own —
+        // just extend along local Y like they do.
+        const grabGeom = new THREE.CylinderGeometry(0.15, 0.15, 1, 8);
+        grabGeom.translate(0, 0.5, 0);
+        const grabMesh = new THREE.Mesh(grabGeom, new THREE.MeshBasicMaterial({ visible: false }));
+        grabMesh.userData.arrow = arrow;
+        arrow.add(grabMesh);
+        gizmoGroup.add(arrow);
+        gizmoGrabMeshes.push(grabMesh);
+      }
+    }
+    buildGizmo();
+
+    function positionGizmo(part) {
+      const box = new THREE.Box3().setFromObject(part);
+      const center = box.getCenter(new THREE.Vector3());
+      // Scale to the selected part's own size, not the whole model's — a
+      // small part (e.g. a bolt) needs small arrows, not ones sized for
+      // the model overall.
+      const size = box.getSize(new THREE.Vector3()).length() || modelRadius * 0.05;
+      const length = THREE.MathUtils.clamp(size * 0.6, modelRadius * 0.02, modelRadius * 0.4);
+      gizmoGroup.position.copy(center);
+      gizmoGroup.children.forEach((arrow, i) => {
+        arrow.setLength(length, length * 0.25, length * 0.15);
+        // setLength() only scales ArrowHelper's own line/cone, not the
+        // grab-cylinder child added in buildGizmo() — keep it in sync so
+        // the clickable area matches what's actually drawn.
+        gizmoGrabMeshes[i].scale.set(1, length, 1);
+      });
+    }
+
+    function setGizmoHover(arrow, on) {
+      if (!arrow) return;
+      const color = on ? arrow.userData.hoverColor : arrow.userData.color;
+      arrow.setColor(color);
+    }
+
+    function setGizmoVisible(on) {
+      gizmoGroup.visible = on && !!selectedPart;
+      if (gizmoGroup.visible) positionGizmo(selectedPart);
+    }
+
+    // A click on a part first shows a small tooltip bubble at the click
+    // point (candidatePart) — only confirming it via the tooltip's "Vybrat
+    // objekt" button actually selects the part and shows the gizmo. This
+    // keeps the 3D view free of an unasked-for cross of arrows on every
+    // click; the tooltip is the one deliberate step that turns them on.
+    let candidatePart = null;
+
+    function hideTooltip() {
+      candidatePart = null;
+      partTooltip.classList.add("hidden");
+    }
+
+    function showTooltipAt(part, clientX, clientY) {
+      candidatePart = part;
+      const rect = canvas.getBoundingClientRect();
+      partTooltip.style.left = `${clientX - rect.left}px`;
+      partTooltip.style.top = `${clientY - rect.top}px`;
+      partTooltipName.textContent = part.name || "(bez názvu)";
+      partTooltip.classList.remove("hidden");
+    }
+
+    function selectPart(part) {
+      setPartHighlight(selectedPart, false);
+      selectedPart = part;
+      setPartHighlight(selectedPart, true);
+      const has = !!part;
+      explodePickHint.classList.toggle("hidden", has);
+      explodePickSelected.classList.toggle("hidden", !has);
+      setGizmoVisible(has);
+      if (has) explodePickName.textContent = part.name || "(bez názvu)";
+    }
+
+    // Distinguish an actual click from the end of an OrbitControls drag
+    // (rotate/pan) — both fire a "click" event on pointer-up.
+    let pointerDownPos = null;
+    canvas.addEventListener("pointerdown", (e) => {
+      pointerDownPos = { x: e.clientX, y: e.clientY };
+    });
+
+    function ndcFromEvent(e) {
+      const rect = canvas.getBoundingClientRect();
+      return new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+    }
+
+    canvas.addEventListener("click", (e) => {
+      if (!isManualMode() || !currentModel || dragState) return;
+      if (pointerDownPos) {
+        const moved = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+        if (moved > 5) return; // was a drag, not a click
+      }
+      pointerNdc.copy(ndcFromEvent(e));
+      raycaster.setFromCamera(pointerNdc, camera);
+      // Recurse into groups (a part may be a multi-mesh sub-assembly like
+      // TOPWET), then walk back up to whichever direct child of the model
+      // was actually hit — that's the explode unit, not the leaf mesh.
+      // Edge lines (LineSegments) are excluded: they're not real geometry
+      // to click on, and a raycaster hit on one has no basePosition to
+      // resolve to a part.
+      const pickable = currentModel.children.filter((p) => !p.isLineSegments);
+      const hits = raycaster.intersectObjects(pickable, true);
+      if (hits.length > 0) {
+        let obj = hits[0].object;
+        while (obj.parent && obj.parent !== currentModel) obj = obj.parent;
+        if (obj.userData.basePosition) showTooltipAt(obj, e.clientX, e.clientY);
+      } else {
+        hideTooltip();
+      }
+    });
+
+    partTooltipSelect.addEventListener("click", () => {
+      if (candidatePart) selectPart(candidatePart);
+      hideTooltip();
+    });
+
+    explodePickReset.addEventListener("click", () => {
+      if (!selectedPart) return;
+      selectedPart.userData.manualOffset.set(0, 0, 0);
+      applyExplode();
+    });
+
+    // ---- Dragging a gizmo arrow ----
+    // While dragging, the part moves along a straight world-space line (the
+    // arrow's axis, through the part's current position). The standard trick:
+    // treat the mouse ray and the axis line as two 3D lines and find the
+    // point on the axis closest to the mouse ray, using each pointermove.
+    let dragState = null; // { part, axis, axisPoint, startOffset, startNdcPoint }
+
+    function closestPointOnAxis(axisOrigin, axisDir, ray) {
+      // Closest point between the axis line (origin + t*axisDir) and the
+      // ray from the camera — standard closest-point-between-two-lines.
+      const w0 = axisOrigin.clone().sub(ray.origin);
+      const a = axisDir.dot(axisDir);
+      const b = axisDir.dot(ray.direction);
+      const c = ray.direction.dot(ray.direction);
+      const d = axisDir.dot(w0);
+      const e = ray.direction.dot(w0);
+      const denom = a * c - b * b;
+      if (Math.abs(denom) < 1e-9) return axisOrigin.clone();
+      const t = (b * e - c * d) / denom;
+      return axisOrigin.clone().addScaledVector(axisDir, t);
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (!isManualMode() || !selectedPart || !gizmoGroup.visible) return;
+      pointerNdc.copy(ndcFromEvent(e));
+      raycaster.setFromCamera(pointerNdc, camera);
+      const hits = raycaster.intersectObjects(gizmoGrabMeshes, false);
+      if (hits.length === 0) return;
+      const arrow = hits[0].object.userData.arrow;
+      const axisDir = arrow.userData.axis.clone();
+      const axisOrigin = gizmoGroup.position.clone();
+      const startPoint = closestPointOnAxis(axisOrigin, axisDir, raycaster.ray);
+      dragState = {
+        part: selectedPart,
+        arrow,
+        axisDir,
+        axisOrigin,
+        startPoint,
+        startOffset: selectedPart.userData.manualOffset.clone(),
+      };
+      controls.enabled = false;
+      setGizmoHover(arrow, true);
+      e.stopPropagation();
+    });
+
+    window.addEventListener("pointermove", (e) => {
+      if (!dragState) {
+        // Hover feedback when not dragging.
+        if (isManualMode() && gizmoGroup.visible && !dragStateJustEnded) {
+          pointerNdc.copy(ndcFromEvent(e));
+          raycaster.setFromCamera(pointerNdc, camera);
+          const hits = raycaster.intersectObjects(gizmoGrabMeshes, false);
+          gizmoGroup.children.forEach((a) => setGizmoHover(a, false));
+          if (hits.length > 0) setGizmoHover(hits[0].object.userData.arrow, true);
+        }
+        return;
+      }
+      pointerNdc.copy(ndcFromEvent(e));
+      raycaster.setFromCamera(pointerNdc, camera);
+      const point = closestPointOnAxis(dragState.axisOrigin, dragState.axisDir, raycaster.ray);
+      const delta = point.clone().sub(dragState.startPoint).dot(dragState.axisDir);
+      dragState.part.userData.manualOffset
+        .copy(dragState.startOffset)
+        .addScaledVector(dragState.axisDir, delta);
+      applyExplode();
+    });
+
+    let dragStateJustEnded = false;
+    window.addEventListener("pointerup", () => {
+      if (!dragState) return;
+      setGizmoHover(dragState.arrow, false);
+      dragState = null;
+      controls.enabled = true;
+      // Swallow the "click" that fires right after this pointerup so it
+      // doesn't get misread as picking a different part.
+      dragStateJustEnded = true;
+      setTimeout(() => { dragStateJustEnded = false; }, 0);
+    });
+
+    explodeClearBtn.addEventListener("click", () => {
+      settings.explode = 0;
+      if (currentModel) {
+        currentModel.children.forEach((part) => {
+          if (part.userData.manualOffset) part.userData.manualOffset.set(0, 0, 0);
+        });
+      }
+      // Also drop the current selection so the gizmo goes away and the
+      // canvas goes back to plain orbit — "clear" should feel like a full
+      // reset, not leave the view stuck in gizmo mode.
+      selectPart(null);
+      hideTooltip();
+      syncSettingsUI();
+      applyExplode();
+      saveSettings();
+    });
 
     // ---------- Lighting ----------
     function updateSun() {
@@ -640,6 +1010,7 @@
         if (key === "fixUV" || key === "uvScale") applyUVFix();
         else if (key === "displayMode") applyDisplayMode();
         else if (key === "explode") applyExplode();
+        else if (key === "explodeMode") { setExplodeModeUI(); applyExplode(); }
         else applyLighting();
         saveSettings();
       });
@@ -648,6 +1019,12 @@
     settingsResetBtn.addEventListener("click", () => {
       Object.assign(settings, DEFAULT_SETTINGS);
       syncSettingsUI();
+      if (currentModel) {
+        currentModel.children.forEach((part) => {
+          if (part.userData.manualOffset) part.userData.manualOffset.set(0, 0, 0);
+        });
+      }
+      setExplodeModeUI();
       applyLighting();
       applyUVFix();
       applyDisplayMode();
@@ -675,6 +1052,7 @@
     }
 
     syncSettingsUI();
+    setExplodeModeUI();
     applyLighting();
     loadManifest();
     animate();
