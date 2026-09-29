@@ -81,6 +81,12 @@
           <span>Barva pozadí</span>
         </label>
 
+        <h2>Rozklad</h2>
+        <label class="setting">
+          <span>Míra rozkladu <output data-for="explode"></output></span>
+          <input type="range" data-setting="explode" min="0" max="1" step="0.01" />
+        </label>
+
         <h2>Textury</h2>
         <label class="setting setting-inline">
           <input type="checkbox" data-setting="fixUV" />
@@ -147,6 +153,7 @@
       background: "#14161a",
       fixUV: true,
       uvScale: 1.0,
+      explode: 0,
     };
 
     function loadSettings() {
@@ -288,6 +295,39 @@
           obj.userData.edgeLines.visible = mode === "edges" || mode === "wireframe";
         }
       });
+    }
+
+    // ---------- Exploded view ----------
+    // Each top-level part gets pushed outward from the model's center, along
+    // the line from that center to the part's own center — a classic CAD-style
+    // "explosion" that works for any shape without per-model configuration.
+    const EXPLODE_FACTOR = 0.8;
+
+    function computeExplodeDirections(model) {
+      const partCenter = new THREE.Vector3();
+      for (const part of model.children) {
+        if (!part.isMesh) continue; // edge lines etc. move together with their mesh
+        part.userData.basePosition = part.position.clone();
+        new THREE.Box3().setFromObject(part).getCenter(partCenter);
+        const dir = partCenter.sub(modelCenter);
+        const dist = dir.length();
+        part.userData.explodeDir = dist > 1e-6 ? dir.divideScalar(dist) : new THREE.Vector3();
+      }
+    }
+
+    function applyExplode() {
+      if (!currentModel) return;
+      const amount = settings.explode;
+      for (const part of currentModel.children) {
+        if (!part.userData.basePosition) continue;
+        const offset = part.userData.explodeDir
+          .clone()
+          .multiplyScalar(amount * modelRadius * EXPLODE_FACTOR);
+        part.position.copy(part.userData.basePosition).add(offset);
+        if (part.userData.edgeLines) {
+          part.userData.edgeLines.position.copy(part.position);
+        }
+      }
     }
 
     // ---------- Lighting ----------
@@ -491,6 +531,8 @@
       applyUVFix(); // rebuilds edges for meshes whose geometry it replaces
       applyDisplayMode();
       frameObject(currentModel);
+      computeExplodeDirections(currentModel); // needs modelCenter/modelRadius from frameObject
+      applyExplode(); // respects a previously saved explode amount
       updateSun();
       dropzone.classList.add("hidden");
       showLoading(false);
@@ -573,6 +615,7 @@
     function formatSetting(key, value) {
       if (key === "sunAzimuth" || key === "sunElevation") return `${Math.round(value)}°`;
       if (key === "uvScale") return `${Number(value).toFixed(1)} m`;
+      if (key === "explode") return `${Math.round(value * 100)} %`;
       return Number(value).toFixed(2);
     }
 
@@ -596,6 +639,7 @@
         syncSettingsUI();
         if (key === "fixUV" || key === "uvScale") applyUVFix();
         else if (key === "displayMode") applyDisplayMode();
+        else if (key === "explode") applyExplode();
         else applyLighting();
         saveSettings();
       });
@@ -607,6 +651,7 @@
       applyLighting();
       applyUVFix();
       applyDisplayMode();
+      applyExplode();
       saveSettings();
     });
 
